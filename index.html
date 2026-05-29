@@ -63,10 +63,18 @@ select.catsel{padding:7px 14px;background:var(--panel);border:1px solid var(--bo
 
 .card{background:linear-gradient(160deg,var(--panel),var(--panel2));border:1px solid var(--border);border-radius:16px;padding:20px;cursor:pointer;transition:.22s;position:relative;overflow:hidden;display:flex;flex-direction:column}
 .cardphoto{margin:-20px -20px 14px;height:160px;background:linear-gradient(160deg,#241620,#160d13);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
-.cardphoto img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .4s}
-.cardphoto img.loaded{opacity:1}
-.cardphoto .ph-skel{position:absolute;inset:0;background:linear-gradient(90deg,#1c1219,#2a1a22,#1c1219);background-size:200% 100%;animation:shimmer 1.4s infinite}
+.cardphoto img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .35s}
+.cardphoto img.active{opacity:1;z-index:1}
+.cardphoto .ph-skel{position:absolute;inset:0;background:linear-gradient(90deg,#1c1219,#2a1a22,#1c1219);background-size:200% 100%;animation:shimmer 1.4s infinite;z-index:2}
 .cardphoto .ph-none{font-family:'Space Mono',monospace;font-size:.62rem;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+.carnav{position:absolute;top:50%;transform:translateY(-50%);z-index:5;width:30px;height:30px;border-radius:50%;border:none;background:rgba(10,6,8,.55);color:#f0c674;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s;backdrop-filter:blur(2px)}
+.cardphoto:hover .carnav{opacity:1}
+.carnav:hover{background:rgba(10,6,8,.85)}
+.carnav.prev{left:8px}
+.carnav.next{right:8px}
+.cardots{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:5px}
+.cardots span{width:6px;height:6px;border-radius:50%;background:rgba(243,233,221,.4);transition:.2s;cursor:pointer}
+.cardots span.on{background:#f0c674;width:14px;border-radius:3px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--gold);opacity:0;transition:.22s}
 .card:hover{border-color:var(--gold);transform:translateY(-3px);box-shadow:0 14px 40px rgba(0,0,0,.45)}
@@ -177,36 +185,79 @@ const HS = [36.1126, -115.1722];
 // Si la dejas vacía, las tarjetas simplemente no mostrarán foto (todo lo demás funciona igual).
 const GOOGLE_API_KEY = "AIzaSyBmCpTGbLXGkbgnHpiMLgr561L0ESq7mo8";
 
-const photoCache = {};   // place_id -> URL de foto (o false si no hay)
-function loadPhoto(pid, imgEl, skelEl){
-  if(!GOOGLE_API_KEY || GOOGLE_API_KEY.indexOf("PEGA_AQUI")===0 || !pid){
-    if(skelEl){ skelEl.classList.remove('ph-skel'); skelEl.classList.add('ph-none'); skelEl.textContent='No photo'; }
-    return;
-  }
-  // cache hit
-  if(photoCache[pid]!==undefined){
-    applyPhoto(photoCache[pid], imgEl, skelEl); return;
-  }
-  // Places API (New) — Place Details, pedimos solo el campo photos para minimizar coste
-  fetch('https://places.googleapis.com/v1/places/'+pid+'?fields=photos&key='+GOOGLE_API_KEY)
+const MAX_PHOTOS = 5;      // máx fotos por carrusel
+const photoCache = {};     // place_id -> array de URLs (o false si no hay)
+
+// Pide a Google la lista de fotos del sitio (1 llamada). Devuelve promesa con array de URLs.
+function fetchPhotoList(pid){
+  if(!GOOGLE_API_KEY || GOOGLE_API_KEY.indexOf("PEGA_AQUI")===0 || !pid) return Promise.resolve(false);
+  if(photoCache[pid]!==undefined) return Promise.resolve(photoCache[pid]);
+  return fetch('https://places.googleapis.com/v1/places/'+pid+'?fields=photos&key='+GOOGLE_API_KEY)
     .then(r=>r.json())
     .then(d=>{
-      const name = d.photos && d.photos.length ? d.photos[0].name : null;
-      if(!name){ photoCache[pid]=false; applyPhoto(false, imgEl, skelEl); return; }
-      // Construimos la URL de la foto (máx 400px de ancho para ahorrar)
-      const url = 'https://places.googleapis.com/v1/'+name+'/media?maxWidthPx=400&key='+GOOGLE_API_KEY;
-      photoCache[pid]=url; applyPhoto(url, imgEl, skelEl);
+      if(!d.photos || !d.photos.length){ photoCache[pid]=false; return false; }
+      const urls = d.photos.slice(0, MAX_PHOTOS).map(p =>
+        'https://places.googleapis.com/v1/'+p.name+'/media?maxWidthPx=500&key='+GOOGLE_API_KEY);
+      photoCache[pid]=urls; return urls;
     })
-    .catch(()=>{ photoCache[pid]=false; applyPhoto(false, imgEl, skelEl); });
+    .catch(()=>{ photoCache[pid]=false; return false; });
 }
-function applyPhoto(url, imgEl, skelEl){
-  if(!url){
-    if(skelEl){ skelEl.classList.remove('ph-skel'); skelEl.classList.add('ph-none'); skelEl.textContent='No photo'; }
-    return;
-  }
-  imgEl.onload = ()=>{ imgEl.classList.add('loaded'); if(skelEl) skelEl.style.display='none'; };
-  imgEl.onerror = ()=>{ if(skelEl){ skelEl.classList.remove('ph-skel'); skelEl.classList.add('ph-none'); skelEl.textContent='No photo'; } };
+
+// Carga una imagen en un <img> dado, con 1 reintento. Marca skeleton oculto al cargar.
+function loadInto(imgEl, url, skelEl){
+  if(imgEl.dataset.loaded==='1') return;     // ya cargada antes
+  let tried=0;
+  imgEl.onload = ()=>{ imgEl.dataset.loaded='1'; if(skelEl) skelEl.style.display='none'; };
+  imgEl.onerror = ()=>{
+    if(tried<1){ tried++; setTimeout(()=>{ imgEl.src=url+'&r='+Date.now(); },600); return; }
+    if(skelEl && !skelEl.dataset.any){ skelEl.classList.remove('ph-skel'); skelEl.classList.add('ph-none'); skelEl.textContent='No photo'; }
+  };
   imgEl.src = url;
+}
+
+// Monta el carrusel dentro del contenedor .cardphoto
+function buildCarousel(ph, pid){
+  const skel = ph.querySelector('.ph-skel');
+  fetchPhotoList(pid).then(urls=>{
+    if(!urls){ skel.classList.remove('ph-skel'); skel.classList.add('ph-none'); skel.textContent='No photo'; return; }
+    skel.dataset.any='1';
+    let idx=0;
+    const imgs=[];
+    // crea un <img> por foto (vacíos salvo el primero)
+    urls.forEach((u,i)=>{
+      const im=document.createElement('img');
+      im.referrerPolicy='origin-when-cross-origin';
+      im.alt=''; im.dataset.url=u;
+      if(i===0) im.classList.add('active');
+      ph.appendChild(im);
+      imgs.push(im);
+    });
+    // solo carga la primera ahora; las demás bajo demanda
+    loadInto(imgs[0], urls[0], skel);
+
+    if(urls.length>1){
+      // flechas
+      const prev=document.createElement('button'); prev.className='carnav prev'; prev.innerHTML='‹';
+      const next=document.createElement('button'); next.className='carnav next'; next.innerHTML='›';
+      // puntitos
+      const dots=document.createElement('div'); dots.className='cardots';
+      urls.forEach((u,i)=>{ const d=document.createElement('span'); if(i===0)d.classList.add('on'); dots.appendChild(d); });
+      ph.appendChild(prev); ph.appendChild(next); ph.appendChild(dots);
+      const dotEls=[...dots.children];
+
+      function show(n){
+        n=(n+urls.length)%urls.length;
+        imgs[idx].classList.remove('active'); dotEls[idx].classList.remove('on');
+        idx=n;
+        if(!imgs[idx].getAttribute('src')) loadInto(imgs[idx], urls[idx], null);
+        imgs[idx].classList.add('active'); dotEls[idx].classList.add('on');
+      }
+      const stop=e=>{ e.stopPropagation(); };
+      prev.onclick=e=>{ stop(e); show(idx-1); };
+      next.onclick=e=>{ stop(e); show(idx+1); };
+      dotEls.forEach((d,i)=>d.onclick=e=>{ stop(e); show(i); });
+    }
+  });
 }
 
 const cats = [...new Set(DATA.map(r=>r.pcat))].sort();
@@ -276,7 +327,7 @@ function render(){
       ? '<div class="crating"><span class="stars">'+starStr(r.rating)+'</span><span class="num">'+r.rating.toFixed(1)+'</span><span class="rc">('+r.rc.toLocaleString()+' reviews)</span></div>'
       : '<div class="crating"><span class="rc">No Google rating</span></div>';
     card.innerHTML =
-      '<div class="cardphoto"><div class="ph-skel"></div><img alt="'+r.name+'" /></div>'+
+      '<div class="cardphoto"><div class="ph-skel"></div></div>'+
       '<div class="ctop"><div class="cname">'+r.name+'</div><div class="cprice">'+dollar(r.plevel)+'</div></div>'+
       ratingHtml +
       '<div class="cmeta"><span class="tag">'+r.category+'</span>'+
@@ -288,7 +339,7 @@ function render(){
     grid.appendChild(card);
     // cargar foto de Google
     const ph = card.querySelector('.cardphoto');
-    loadPhoto(r.pid, ph.querySelector('img'), ph.querySelector('.ph-skel'));
+    buildCarousel(ph, r.pid);
 
     const icon=L.divIcon({className:'',html:'<div style="background:#d4a24e;width:12px;height:12px;border-radius:50%;border:2px solid #0a0608;box-shadow:0 0 8px #d4a24e"></div>',iconSize:[12,12],iconAnchor:[6,6]});
     const mk=L.marker([r.lat,r.lng],{icon}).addTo(map);
