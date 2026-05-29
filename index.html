@@ -190,7 +190,7 @@ const photoCache = {};     // place_id -> array de URLs (o false si no hay)
 
 // Pide a Google la lista de fotos del sitio (1 llamada). Devuelve promesa con array de URLs.
 function fetchPhotoList(pid){
-  if(!GOOGLE_API_KEY || GOOGLE_API_KEY.indexOf("PEGA_AQUI")===0 || !pid) return Promise.resolve(false);
+if(!GOOGLE_API_KEY || GOOGLE_API_KEY.indexOf("PEGA_AQUI")===0 || !pid) return Promise.resolve(false);
   if(photoCache[pid]!==undefined) return Promise.resolve(photoCache[pid]);
   return fetch('https://places.googleapis.com/v1/places/'+pid+'?fields=photos&key='+GOOGLE_API_KEY)
     .then(r=>r.json())
